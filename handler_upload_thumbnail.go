@@ -84,10 +84,10 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	key := make([]byte, 32)
-	rand.Read(key)
-	fileString := base64.RawURLEncoding.EncodeToString(key)
-	fileName := fmt.Sprintf("%s%s", fileString, fileExtension)
+	b := make([]byte, 32)
+	rand.Read(b)
+	key := base64.RawURLEncoding.EncodeToString(b)
+	fileName := fmt.Sprintf("%s%s", key, fileExtension)
 	filePath := filepath.Join(cfg.assetsRoot, fileName)
 	thumbnailFile, err := os.Create(filePath)
 	if err != nil {
