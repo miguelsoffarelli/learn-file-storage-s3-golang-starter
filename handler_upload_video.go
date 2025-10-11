@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -88,13 +93,30 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get video's aspect ratio", err)
+		return
+	}
+
+	var videoType string
+
+	switch aspectRatio {
+	case "16:9":
+		videoType = "landscape"
+	case "9:16":
+		videoType = "portrait"
+	default:
+		videoType = "other"
+	}
+
 	b := make([]byte, 32)
 	if _, err = rand.Read(b); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't generate video key", err)
 		return
 	}
 
-	key := hex.EncodeToString(b) + ".mp4"
+	key := videoType + "/" + hex.EncodeToString(b) + ".mp4"
 
 	params := s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
@@ -117,4 +139,40 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, videoMetadata)
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	var b bytes.Buffer
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	cmd.Stdout = &b
+	var exitErr *exec.ExitError
+	err := cmd.Run()
+	log.Printf("Command finished with error: %v", err)
+	if errors.As(err, &exitErr) {
+		log.Fatal("Couldn't run command")
+		return "", err
+	}
+
+	type StreamInfo struct {
+		Width  int
+		Height int
+	}
+
+	type Response struct {
+		Streams []StreamInfo
+	}
+
+	file := Response{}
+
+	if err := json.Unmarshal(b.Bytes(), &file); err != nil {
+		log.Fatal("Couldn't unmarshal")
+		return "", err
+	}
+
+	if file.Streams[0].Width/file.Streams[0].Height == 16/9 {
+		return "16:9", nil
+	} else if file.Streams[0].Height/file.Streams[0].Width == 16/9 {
+		return "9:16", nil
+	}
+	return "other", nil
 }
