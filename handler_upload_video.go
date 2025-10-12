@@ -79,9 +79,6 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	defer os.Remove(tempFile.Name())
-	defer tempFile.Close()
-
 	_, err = io.Copy(tempFile, file)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't write temp file", err)
@@ -93,11 +90,29 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	processedVideoPath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't process video for fast start", err)
+		return
+	}
+
+	processedFile, err := os.Open(processedVideoPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't open processed video", err)
+		return
+	}
+
+	tempFile.Close()
+	os.Remove(tempFile.Name())
+
+	aspectRatio, err := getVideoAspectRatio(processedVideoPath)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't get video's aspect ratio", err)
 		return
 	}
+
+	defer processedFile.Close()
+	defer os.Remove(processedVideoPath)
 
 	var videoType string
 
@@ -121,7 +136,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	params := s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key),
-		Body:        tempFile,
+		Body:        processedFile,
 		ContentType: aws.String(mediaType),
 	}
 
@@ -147,7 +162,7 @@ func getVideoAspectRatio(filePath string) (string, error) {
 	cmd.Stdout = &b
 	var exitErr *exec.ExitError
 	err := cmd.Run()
-	log.Printf("Command finished with error: %v", err)
+	log.Printf("Getting video aspect ratio... Command finished with error: %v", err)
 	if errors.As(err, &exitErr) {
 		log.Fatal("Couldn't run command")
 		return "", err
@@ -175,4 +190,18 @@ func getVideoAspectRatio(filePath string) (string, error) {
 		return "9:16", nil
 	}
 	return "other", nil
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outputFilePath := filePath + ".processing"
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath)
+	var exitErr *exec.ExitError
+	err := cmd.Run()
+	log.Printf("Processing video for fast start... Command finished with error: %v", err)
+	if errors.As(err, &exitErr) {
+		log.Fatal("Couldn't run command")
+		return "", err
+	}
+
+	return outputFilePath, nil
 }
